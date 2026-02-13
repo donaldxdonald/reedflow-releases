@@ -1,0 +1,296 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      reedflow_ref:
+        description: "Git ref to build (tag or sha) in donaldxdonald/reedflow (e.g., v1.0.0)"
+        required: true
+        type: string
+      version:
+        description: "Version to release (e.g., 1.0.0). Optional if reedflow_ref is a v* tag."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && inputs.reedflow_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: ${{ !(github.event_name == 'push' && (github.actor == 'github-actions[bot]' || github.triggering_actor == 'github-actions[bot]')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      reedflow_ref: ${{ steps.meta.outputs.reedflow_ref }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_notes_path: ${{ steps.meta.outputs.release_notes_path }}
+    steps:
+      - name: Validate required secrets
+        run: |
+          missing=""
+          if [ -z "${{ secrets.REEDFLOW_REPO_TOKEN }}" ]; then missing="$missing REEDFLOW_REPO_TOKEN"; fi
+          if [ -z "${{ secrets.CSC_LINK }}" ]; then missing="$missing CSC_LINK"; fi
+          if [ -z "${{ secrets.CSC_KEY_PASSWORD }}" ]; then missing="$missing CSC_KEY_PASSWORD"; fi
+          if [ -z "${{ secrets.APPLE_ID }}" ]; then missing="$missing APPLE_ID"; fi
+          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then missing="$missing APPLE_APP_SPECIFIC_PASSWORD"; fi
+          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then missing="$missing APPLE_TEAM_ID"; fi
+          if [ -n "$missing" ]; then
+            echo "Missing required secrets:$missing"
+            exit 1
+          fi
+          echo "All required secrets are configured"
+
+      - name: Resolve input ref/version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REEDFLOW_REF="${{ inputs.reedflow_ref }}"
+            INPUT_VERSION="${{ inputs.version }}"
+          else
+            REEDFLOW_REF="${{ github.ref_name }}"
+            INPUT_VERSION=""
+          fi
+
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            case "$REEDFLOW_REF" in
+              v*)
+                VERSION="${REEDFLOW_REF#v}"
+                ;;
+              *)
+                echo "inputs.version is required when reedflow_ref is not a v* tag"
+                exit 1
+                ;;
+            esac
+          fi
+
+          RELEASE_TAG="v${VERSION}"
+          if [[ "$REEDFLOW_REF" == v* && "$REEDFLOW_REF" != "$RELEASE_TAG" ]]; then
+            echo "Version mismatch: reedflow_ref=$REEDFLOW_REF vs release_tag=$RELEASE_TAG"
+            exit 1
+          fi
+
+          RELEASE_NOTES_PATH="apps/desktop/release-notes/${RELEASE_TAG}.md"
+
+          echo "reedflow_ref=$REEDFLOW_REF" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_notes_path=$RELEASE_NOTES_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private source repo
+        uses: actions/checkout@v4
+        with:
+          repository: donaldxdonald/reedflow
+          ref: ${{ steps.meta.outputs.reedflow_ref }}
+          token: ${{ secrets.REEDFLOW_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+
+      - name: Run linting
+        run: pnpm lint
+
+      - name: Run type checking
+        run: pnpm typecheck
+
+      - name: Validate release notes exist
+        run: |
+          RELEASE_NOTES_PATH="${{ steps.meta.outputs.release_notes_path }}"
+          if [ ! -f "$RELEASE_NOTES_PATH" ]; then
+            echo "Missing release notes file: $RELEASE_NOTES_PATH"
+            exit 1
+          fi
+
+  build:
+    if: ${{ !(github.event_name == 'push' && (github.actor == 'github-actions[bot]' || github.triggering_actor == 'github-actions[bot]')) }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ${{ vars.MAC_ARM }}
+            arch: arm64
+            rust-target: aarch64-apple-darwin
+          - os: macos-15-intel
+            arch: x64
+            rust-target: x86_64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout private source repo
+        uses: actions/checkout@v4
+        with:
+          repository: donaldxdonald/reedflow
+          ref: ${{ needs.validate.outputs.reedflow_ref }}
+          token: ${{ secrets.REEDFLOW_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          rust: "true"
+          rust-target: ${{ matrix.rust-target }}
+
+      - name: Prepare pnpm lockfile for electron-builder
+        run: ln -sf ../../pnpm-lock.yaml apps/desktop/pnpm-lock.yaml
+
+      - name: Build, Sign, and Notarize
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CARGO_BUILD_TARGET: ${{ matrix.rust-target }}
+          npm_config_arch: ${{ matrix.arch }}
+        run: |
+          # Ensure stale local artifacts never leak between architectures.
+          rm -f packages/transcribe/reedflow-transcribe*.node
+          rm -f packages/audio-toolkit/audio-toolkit*.node
+
+          # Build app code first, then package with electron-builder.
+          # Explicitly disable electron-builder publishing; publishing happens in the `publish` job.
+          pnpm --filter Reedflow build
+
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            ARCH_FLAG="--x64"
+          else
+            ARCH_FLAG="--arm64"
+          fi
+
+          pnpm --filter Reedflow exec electron-builder --mac "$ARCH_FLAG" --publish never
+
+      - name: Run smoke test
+        run: |
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            MAC_OUTPUT_DIR="mac"
+          else
+            MAC_OUTPUT_DIR="mac-arm64"
+          fi
+
+          APP_PATH=$(find "$PWD/dist/desktop/$MAC_OUTPUT_DIR" -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle found"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            EXPECTED_MACH_ARCH="x86_64"
+          else
+            EXPECTED_MACH_ARCH="arm64"
+          fi
+          echo "Expected Mach-O arch: $EXPECTED_MACH_ARCH"
+
+          APP_BINARY="$APP_PATH/Contents/MacOS/Reedflow"
+          APP_FILE_INFO=$(file "$APP_BINARY")
+          echo "App binary: $APP_FILE_INFO"
+          if [[ "$APP_FILE_INFO" != *"$EXPECTED_MACH_ARCH"* ]]; then
+            echo "Packaged app binary architecture mismatch"
+            exit 1
+          fi
+
+          NATIVE_BINDING_PATH=$(find "$APP_PATH/Contents/Resources" -type f -name "reedflow-transcribe*.node" | head -1)
+          if [ -z "$NATIVE_BINDING_PATH" ]; then
+            echo "Native transcribe binding not found in packaged app"
+            exit 1
+          fi
+          echo "Found packaged native binding at: $NATIVE_BINDING_PATH"
+
+          AUDIO_TOOLKIT_BINDING_PATH=$(find "$APP_PATH/Contents/Resources" -type f -name "audio-toolkit*.node" | head -1)
+          if [ -z "$AUDIO_TOOLKIT_BINDING_PATH" ]; then
+            echo "Native audio-toolkit binding not found in packaged app"
+            exit 1
+          fi
+          echo "Found packaged native binding at: $AUDIO_TOOLKIT_BINDING_PATH"
+
+          TRANSCRIBE_FILE_INFO=$(file "$NATIVE_BINDING_PATH")
+          echo "Transcribe binding: $TRANSCRIBE_FILE_INFO"
+          if [[ "$TRANSCRIBE_FILE_INFO" != *"$EXPECTED_MACH_ARCH"* ]]; then
+            echo "Packaged transcribe binding architecture mismatch"
+            exit 1
+          fi
+
+          AUDIO_TOOLKIT_FILE_INFO=$(file "$AUDIO_TOOLKIT_BINDING_PATH")
+          echo "Audio toolkit binding: $AUDIO_TOOLKIT_FILE_INFO"
+          if [[ "$AUDIO_TOOLKIT_FILE_INFO" != *"$EXPECTED_MACH_ARCH"* ]]; then
+            echo "Packaged audio-toolkit binding architecture mismatch"
+            exit 1
+          fi
+
+          APP_ASAR="$APP_PATH/Contents/Resources/app.asar"
+          APP_ASAR="$APP_ASAR" ELECTRON_RUN_AS_NODE=1 "$APP_BINARY" -e "require(process.env.APP_ASAR + '/node_modules/@reedflow/transcribe'); require(process.env.APP_ASAR + '/node_modules/@reedflow/audio-toolkit'); console.log('Packaged native modules load')"
+
+          codesign -dv --verbose=2 "$APP_PATH" 2>&1 | head -20
+
+          echo "Smoke test passed"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            dist/desktop/*.dmg
+            dist/desktop/*.zip
+            dist/desktop/latest-mac.yml
+          retention-days: 7
+
+  publish:
+    if: ${{ !(github.event_name == 'push' && (github.actor == 'github-actions[bot]' || github.triggering_actor == 'github-actions[bot]')) }}
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private source repo
+        uses: actions/checkout@v4
+        with:
+          repository: donaldxdonald/reedflow
+          ref: ${{ needs.validate.outputs.reedflow_ref }}
+          token: ${{ secrets.REEDFLOW_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Download arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/arm64
+
+      - name: Download x64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x64
+          path: dist/x64
+
+      - name: Merge latest-mac.yml manifests
+        run: |
+          mkdir -p dist/release
+
+          cp dist/arm64/*.dmg dist/arm64/*.zip dist/release/ 2>/dev/null || true
+          cp dist/x64/*.dmg dist/x64/*.zip dist/release/ 2>/dev/null || true
+
+          cp dist/arm64/latest-mac.yml dist/release/latest-mac.yml
+
+          echo "Release artifacts:"
+          ls -la dist/release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.release_tag }}
+          target_commitish: main
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body_path: ${{ needs.validate.outputs.release_notes_path }}
+          token: ${{ github.token }}
+          files: |
+            dist/release/*.dmg
+            dist/release/*.zip
+            dist/release/latest-mac.yml
