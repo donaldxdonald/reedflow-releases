@@ -1,0 +1,70 @@
+name: 'Setup Build Environment'
+description: 'Sets up Node.js, pnpm, optionally Rust, and installs dependencies with caching'
+
+inputs:
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '24'
+  rust:
+    description: 'Whether to setup Rust toolchain'
+    required: false
+    default: 'false'
+  rust-target:
+    description: 'Rust target triple (e.g., aarch64-apple-darwin, x86_64-apple-darwin)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install Python setuptools (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install python-setuptools
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+
+    - name: Get pnpm store directory
+      id: pnpm-cache
+      shell: bash
+      run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Setup Rust toolchain
+      if: inputs.rust == 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.rust-target }}
+
+    - name: Cache Rust dependencies
+      if: inputs.rust == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          packages/transcribe/target/
+          packages/audio-toolkit/target/
+        key: ${{ runner.os }}-${{ inputs.rust-target || 'default' }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ inputs.rust-target || 'default' }}-cargo-
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
