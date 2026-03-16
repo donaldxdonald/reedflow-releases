@@ -150,6 +150,9 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CARGO_BUILD_TARGET: ${{ matrix.rust-target }}
+          REEDFLOW_AUTH_SITE_URL: ${{ secrets.REEDFLOW_AUTH_SITE_URL }}
+          REEDFLOW_SUPABASE_URL: ${{ secrets.REEDFLOW_SUPABASE_URL }}
+          REEDFLOW_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.REEDFLOW_SUPABASE_PUBLISHABLE_KEY }}
           npm_config_arch: ${{ matrix.arch }}
         run: |
           # Ensure stale local artifacts never leak between architectures.
