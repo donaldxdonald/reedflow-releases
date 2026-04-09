@@ -153,6 +153,7 @@ jobs:
           REEDFLOW_AUTH_SITE_URL: ${{ secrets.REEDFLOW_AUTH_SITE_URL }}
           REEDFLOW_SUPABASE_URL: ${{ secrets.REEDFLOW_SUPABASE_URL }}
           REEDFLOW_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.REEDFLOW_SUPABASE_PUBLISHABLE_KEY }}
+          MAIN_VITE_REEDFLOW_POSTHOG_API_KEY: ${{ secrets.MAIN_VITE_REEDFLOW_POSTHOG_API_KEY }}
           npm_config_arch: ${{ matrix.arch }}
         run: |
           # Ensure stale local artifacts never leak between architectures.
