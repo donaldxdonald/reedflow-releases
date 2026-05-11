@@ -118,9 +118,9 @@ jobs:
           - os: macos-14
             arch: arm64
             rust-target: aarch64-apple-darwin
-          - os: macos-15-intel
-            arch: x64
-            rust-target: x86_64-apple-darwin
+          # - os: macos-15-intel
+          #   arch: x64
+          #   rust-target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
