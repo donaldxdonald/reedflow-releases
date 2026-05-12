@@ -266,18 +266,18 @@ jobs:
           name: macos-arm64
           path: dist/arm64
 
-      - name: Download x64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-x64
-          path: dist/x64
+      # - name: Download x64 artifacts
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: macos-x64
+      #     path: dist/x64
 
       - name: Merge latest-mac.yml manifests
         run: |
           mkdir -p dist/release
 
           cp dist/arm64/*.dmg dist/arm64/*.zip dist/release/ 2>/dev/null || true
-          cp dist/x64/*.dmg dist/x64/*.zip dist/release/ 2>/dev/null || true
+          # cp dist/x64/*.dmg dist/x64/*.zip dist/release/ 2>/dev/null || true
 
           cp dist/arm64/latest-mac.yml dist/release/latest-mac.yml
 
