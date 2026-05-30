@@ -297,4 +297,5 @@ jobs:
           files: |
             dist/release/*.dmg
             dist/release/*.zip
-            dist/release/latest-mac.yml
+            dist/release/*.yml
+            dist/release/*.blockmap
