@@ -245,6 +245,7 @@ jobs:
             dist/desktop/*.dmg
             dist/desktop/*.zip
             dist/desktop/latest-mac.yml
+            dist/desktop/*.blockmap
           retention-days: 7
 
   publish:
@@ -277,6 +278,7 @@ jobs:
           mkdir -p dist/release
 
           cp dist/arm64/*.dmg dist/arm64/*.zip dist/release/ 2>/dev/null || true
+          cp dist/arm64/*.blockmap dist/release/ 2>/dev/null || true
           # cp dist/x64/*.dmg dist/x64/*.zip dist/release/ 2>/dev/null || true
 
           cp dist/arm64/latest-mac.yml dist/release/latest-mac.yml
