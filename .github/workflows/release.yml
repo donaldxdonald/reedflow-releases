@@ -115,7 +115,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # Xcode 26 compiles SpeechAnalyzer into the official addon.
+          # The binary still targets macOS 11 and falls back to on-device SFSpeech.
+          - os: macos-15
             arch: arm64
             rust-target: aarch64-apple-darwin
           - os: macos-15-intel
@@ -138,6 +140,7 @@ jobs:
         with:
           rust: "true"
           rust-target: ${{ matrix.rust-target }}
+          require-xcode-26: "true"
 
       - name: Prepare pnpm lockfile for electron-builder
         run: ln -sf ../../pnpm-lock.yaml apps/desktop/pnpm-lock.yaml
@@ -150,6 +153,10 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CARGO_BUILD_TARGET: ${{ matrix.rust-target }}
+          REEDFLOW_APPLE_SPEECH_BUILD_PROFILE: modern
+          REEDFLOW_ENABLE_APPLE_SPEECH_REALTIME: "1"
+          REEDFLOW_APPLE_SPEECH_ROLLOUT: experimental-beta
+          REEDFLOW_ENABLE_EXPERIMENTAL_FEATURES: "1"
           REEDFLOW_AUTH_SITE_URL: ${{ secrets.REEDFLOW_AUTH_SITE_URL }}
           REEDFLOW_SUPABASE_URL: ${{ secrets.REEDFLOW_SUPABASE_URL }}
           REEDFLOW_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.REEDFLOW_SUPABASE_PUBLISHABLE_KEY }}
@@ -231,7 +238,28 @@ jobs:
           fi
 
           APP_ASAR="$APP_PATH/Contents/Resources/app.asar"
-          APP_ASAR="$APP_ASAR" ELECTRON_RUN_AS_NODE=1 "$APP_BINARY" -e "require(process.env.APP_ASAR + '/node_modules/@reedflow/transcribe'); require(process.env.APP_ASAR + '/node_modules/@reedflow/audio-toolkit'); console.log('Packaged native modules load')"
+          APP_ASAR="$APP_ASAR" ELECTRON_RUN_AS_NODE=1 "$APP_BINARY" - <<'NODE'
+          ;(async () => {
+            require(process.env.APP_ASAR + '/node_modules/@reedflow/transcribe')
+            const toolkit = require(process.env.APP_ASAR + '/node_modules/@reedflow/audio-toolkit')
+            if (toolkit.getAppleSpeechCompiledProfile() !== 'Modern') {
+              throw new Error(`Official package must use Modern Apple Speech; got ${toolkit.getAppleSpeechCompiledProfile()}`)
+            }
+            const capabilities = await toolkit.getAppleSpeechCapabilities('en-US')
+            const engines = capabilities.engines.map((engine) => engine.engine)
+            if (!engines.includes('SfSpeech')) {
+              throw new Error(`Official package must keep SFSpeech fallback; engines=${JSON.stringify(engines)}`)
+            }
+            console.log('Packaged native modules load with modern Apple Speech and SFSpeech fallback')
+          })().catch((error) => {
+            console.error(error)
+            process.exit(1)
+          })
+          NODE
+
+          INFO_PLIST="$APP_PATH/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$INFO_PLIST"
 
           codesign -dv --verbose=2 "$APP_PATH" 2>&1 | head -20
 
