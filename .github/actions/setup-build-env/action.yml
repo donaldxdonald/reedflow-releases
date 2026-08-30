@@ -1,22 +1,26 @@
-name: 'Setup Build Environment'
+name: Setup Build Environment
 description: 'Sets up Node.js, pnpm, optionally Rust, and installs dependencies with caching'
 
 inputs:
   node-version:
-    description: 'Node.js version to use'
+    description: Node.js version to use
     required: false
     default: '24'
   rust:
-    description: 'Whether to setup Rust toolchain'
+    description: Whether to setup Rust toolchain
     required: false
     default: 'false'
   rust-target:
     description: 'Rust target triple (e.g., aarch64-apple-darwin, x86_64-apple-darwin)'
     required: false
     default: ''
+  require-xcode-26:
+    description: 'Select Xcode 26+ so SpeechAnalyzer can be compiled into the macOS 11-compatible addon'
+    required: false
+    default: 'false'
 
 runs:
-  using: 'composite'
+  using: composite
   steps:
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -27,6 +31,57 @@ runs:
       if: runner.os == 'macOS'
       shell: bash
       run: brew install python-setuptools
+
+    - name: Select and verify Xcode 26+
+      if: runner.os == 'macOS' && inputs.require-xcode-26 == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        best_app=""
+        best_version=""
+        shopt -s nullglob
+        for app in /Applications/Xcode.app /Applications/Xcode_*.app; do
+          plist="$app/Contents/version.plist"
+          if [ ! -f "$plist" ]; then
+            continue
+          fi
+          version="$(defaults read "$plist" CFBundleShortVersionString 2>/dev/null || true)"
+          major="${version%%.*}"
+          if [ -z "${major:-}" ] || [ "$major" -lt 26 ]; then
+            continue
+          fi
+          if [ -z "$best_app" ] || [ "$(printf '%s\n%s\n' "$best_version" "$version" | sort -V | tail -1)" = "$version" ]; then
+            best_app="$app"
+            best_version="$version"
+          fi
+        done
+
+        if [ -n "$best_app" ]; then
+          echo "Selecting Xcode $best_version at $best_app"
+          if sudo -n xcode-select --switch "$best_app" >/dev/null 2>&1; then
+            echo "xcode-select switched to $best_app"
+          else
+            echo "xcode-select switch skipped; continuing with DEVELOPER_DIR"
+          fi
+          echo "DEVELOPER_DIR=$best_app/Contents/Developer" >> "$GITHUB_ENV"
+          echo "$best_app/Contents/Developer/usr/bin" >> "$GITHUB_PATH"
+          echo "$best_app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin" >> "$GITHUB_PATH"
+          export DEVELOPER_DIR="$best_app/Contents/Developer"
+        fi
+
+        echo "xcode-select: $(xcode-select -p)"
+        xcodebuild -version
+        xcrun --find swiftc
+        swift --version || true
+
+        XCODE_MAJOR="$(xcodebuild -version | awk '/Xcode/{split($2, parts, "."); print parts[1]; exit}')"
+        if [ -z "${XCODE_MAJOR:-}" ] || [ "$XCODE_MAJOR" -lt 26 ]; then
+          echo "Official Apple Speech builds require Xcode 26 or newer; found major version ${XCODE_MAJOR:-unknown}."
+          echo "Installed Xcode apps:"
+          ls -1d /Applications/Xcode*.app 2>/dev/null || true
+          exit 1
+        fi
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
